@@ -1,0 +1,109 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
+import pyrenn
+
+# Step 1: Load and Preprocess the Data
+data = pd.read_csv('Datos_ML_TT_streamflow3001.csv')
+
+# Convert 'Date' column to datetime format
+data['Date'] = pd.to_datetime(data['Date'])
+
+# Set 'Date' column as index
+data.set_index('Date', inplace=True)
+
+# Split data into training and testing sets
+train_data = data['1990-01-01':'2005-12-31']
+test_data = data['2006-01-01':'2020-09-29']
+
+# Extract features (precipitation) and target (observed flow)
+X_train = train_data[['P(t)', 'Q(t-1)']].values
+y_train = train_data['Q(t)'].values
+X_test = test_data[['P(t)', 'Q(t-1)']].values
+y_test = test_data['Q(t)'].values
+
+# Step 2: Feature Scaling
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+# Step 3: Define the FFNN Model
+input_dim = X_train.shape[1]
+hidden_units1 = 4
+hidden_units2 = 2
+output_dim = 1
+
+# Define the architecture of the neural network
+#layers = [input_dim, hidden_units1, hidden_units2, hidden_units3, output_dim]
+layers = [input_dim, hidden_units1, hidden_units2, output_dim]
+
+# Train the network using LM algorithm
+net = pyrenn.CreateNN(layers)
+net = pyrenn.train_LM(X_train.T, y_train.reshape(1, -1), net, verbose=True)
+
+# Step 4: Predict using the Trained Model
+y_pred_train = pyrenn.NNOut(X_train.T, net).flatten()
+y_pred_test = pyrenn.NNOut(X_test.T, net).flatten()
+
+# Aggregate daily values to monthly values
+monthly_observed_train = train_data['Q(t)'].resample('M').mean()
+monthly_observed_test = test_data['Q(t)'].resample('M').mean()
+
+monthly_simulated_train = pd.Series(y_pred_train, index=train_data.index).resample('M').mean()
+monthly_simulated_test = pd.Series(y_pred_test, index=test_data.index).resample('M').mean()
+
+# Calculate monthly metrics
+def calculate_monthly_metrics(observed, simulated):
+    metrics = {
+        'NSE': 1 - (sum((observed - simulated)**2) / sum((observed - observed.mean())**2)),
+        'RMSE': np.sqrt(mean_squared_error(observed, simulated)),
+        'MAE': np.mean(np.abs(observed - simulated)),
+        'PBIAS': 100 * sum(simulated - observed) / sum(observed)
+    }
+
+    return metrics
+
+# Calculate metrics for train and test periods
+metrics_train = calculate_monthly_metrics(monthly_observed_train, monthly_simulated_train)
+metrics_test = calculate_monthly_metrics(monthly_observed_test, monthly_simulated_test)
+
+# Save monthly values for observed and simulated flows
+monthly_observed_train.to_excel('monthly_values_observed_train_ffnn.xlsx', index=True)
+monthly_simulated_train.to_excel('monthly_values_simulated_train_ffnn.xlsx', index=True)
+monthly_observed_test.to_excel('monthly_values_observed_test_ffnn.xlsx', index=True)
+monthly_simulated_test.to_excel('monthly_values_simulated_test_ffnn.xlsx', index=True)
+
+# Save monthly metrics
+monthly_metrics_df = pd.DataFrame({'Train': metrics_train, 'Test': metrics_test})
+monthly_metrics_df.to_excel('monthly_metrics_aggregated_ffnn.xlsx')
+
+# Additional code to calculate evaluation metrics
+nse_train = 1 - (sum((y_train - y_pred_train)**2) / sum((y_train - y_train.mean())**2))
+nse_test = 1 - (sum((y_test - y_pred_test)**2) / sum((y_test - y_test.mean())**2))
+
+rmse_train = np.sqrt(mean_squared_error(y_train, y_pred_train))
+rmse_test = np.sqrt(mean_squared_error(y_test, y_pred_test))
+
+mae_train = np.mean(np.abs(y_train - y_pred_train))
+mae_test = np.mean(np.abs(y_test - y_pred_test))
+
+p_bias_train = 100 * sum(y_pred_train - y_train) / sum(y_train)
+p_bias_test = 100 * sum(y_pred_test - y_test) / sum(y_test)
+
+# Create a DataFrame to hold the evaluation metrics
+evaluation_df = pd.DataFrame({
+    'Metric': ['NSE', 'RMSE', 'MAE', 'PBIAS'],
+    'Train': [nse_train, rmse_train, mae_train, p_bias_train],
+    'Test': [nse_test, rmse_test, mae_test, p_bias_test]
+})
+
+# Save the evaluation metrics to a CSV file
+evaluation_df.to_csv('evaluation_metrics_ffnn.csv', index=False)
+
+# Save simulated flow in CSV files
+simulated_flow_train = pd.DataFrame({'Date': train_data.index, 'Simulated_Flow': y_pred_train.flatten()})
+simulated_flow_test = pd.DataFrame({'Date': test_data.index, 'Simulated_Flow': y_pred_test.flatten()})
+
+simulated_flow_train.to_csv('simulated_flow_train_ffnn.csv', index=False)
+simulated_flow_test.to_csv('simulated_flow_test_ffnn.csv', index=False)
